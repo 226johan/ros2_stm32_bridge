@@ -2,22 +2,23 @@
 
 #include "iostream"
 
-namespace ros2_stm32 {
-namespace driver {
-
-MiniDriver::MiniDriver() : Node("mini_driver"), parse_flag_(false), start_flag_(true) {
-
+namespace ros2_stm32
+{
+namespace driver
+{
+MiniDriver::MiniDriver() : Node("mini_driver"), parse_flag_(false), start_flag_(true)
+{
   rcl_interfaces::msg::ParameterDescriptor desc;
   desc.read_only = true;
 
-  this->declare_parameter<std::string>("port_name", "/dev/ttyUSB0",desc);
-  this->declare_parameter<int>("baud_rate", 115200,desc);
-  this->declare_parameter<std::string>("odom_frame", "odom",desc);
-  this->declare_parameter<std::string>("base_frame", "base_link",desc);
-  this->declare_parameter<int>("control_rate", 10,desc);
+  this->declare_parameter<std::string>("port_name", "/dev/ttyUSB0", desc);
+  this->declare_parameter<int>("baud_rate", 115200, desc);
+  this->declare_parameter<std::string>("odom_frame", "odom", desc);
+  this->declare_parameter<std::string>("base_frame", "base_link", desc);
+  this->declare_parameter<int>("control_rate", 10, desc);
   this->declare_parameter<double>("maximum_encoding", 100.0);
-  this->declare_parameter<double>("encoder_resolution", 44.0,desc);
-  this->declare_parameter<double>("reduction_ratio", 90.0,desc);
+  this->declare_parameter<double>("encoder_resolution", 44.0, desc);
+  this->declare_parameter<double>("reduction_ratio", 90.0, desc);
   this->declare_parameter<double>("model_param_cw", 0.216);
   this->declare_parameter<double>("model_param_acw", 0.216);
   this->declare_parameter<double>("wheel_diameter", 0.065);
@@ -37,28 +38,32 @@ MiniDriver::MiniDriver() : Node("mini_driver"), parse_flag_(false), start_flag_(
   // this->get_parameter("model_param_acw", model_param_acw_);
   // this->get_parameter("wheel_diameter", wheel_diameter_);
   // pulse_per_cycle_ = reduction_ratio_ * encoder_resolution_ / (M_PI * wheel_diameter_ * pid_rate_);
-  pid_rate_ = 25.0; 
+  pid_rate_ = 25.0;
   last_twist_time_ = this->get_clock()->now();
 
-  voltage_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("voltage", 10);
-  wheel_encode_publisher_ = this->create_publisher<std_msgs::msg::UInt16MultiArray>("wheel_encode", 10);
-  imu_publisher_ = this->create_publisher<sensor_msgs::msg::Imu>("imu", 10);
-  odom_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>("odom", 100);
+  voltage_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("voltage", 10);  //电压消息发布
+  wheel_encode_publisher_ =
+      this->create_publisher<std_msgs::msg::UInt16MultiArray>("wheel_encode", 10);  //轮子编码器消息发布
+  imu_publisher_ = this->create_publisher<sensor_msgs::msg::Imu>("imu", 10);        // imu消息发布
+  odom_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>("odom", 100);   //李成绩消息发布
 
   twist_subscribe_ = this->create_subscription<geometry_msgs::msg::Twist>(
-      "cmd_vel", 10, std::bind(&MiniDriver::TwistHandleCallback, this, std::placeholders::_1));
+      "cmd_vel", 10, std::bind(&MiniDriver::TwistHandleCallback, this, std::placeholders::_1));  //订阅cmd_vel消息
 
-  send_timer_ = this->create_wall_timer(std::chrono::milliseconds((int)(1000 / control_rate_)),
-                                        std::bind(&MiniDriver::SendTimerCallback, this));
-  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
-  Run();
+  send_timer_ =
+      this->create_wall_timer(std::chrono::milliseconds((int)(1000 / control_rate_)),
+                              std::bind(&MiniDriver::SendTimerCallback, this));  //定时器，定期发布到微控制器的回调函数
+  tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);  //发布坐标
+  Run();                                                                     //开始驱动程序的执行
 }
 
-MiniDriver::~MiniDriver() {
+MiniDriver::~MiniDriver()
+{
   mutex_.lock();
   parse_flag_ = false;
-  SpeedCommand(0,0);
-  if (port_) {
+  SpeedCommand(0, 0);
+  if (port_)
+  {
     port_->cancel();
     port_->close();
     port_.reset();
@@ -68,74 +73,101 @@ MiniDriver::~MiniDriver() {
   mutex_.unlock();
 }
 
-bool MiniDriver::Init() {
-  if (port_) {
+bool MiniDriver::Init()
+{
+  // 首先判断port是否已经打开
+  if (port_)
+  {
     RCLCPP_ERROR(this->get_logger(), "error : port is already opened...");
     return false;
   }
 
+  //
   port_ = serial_port_ptr(new boost::asio::serial_port(io_service_));
   port_->open(port_name_, ec_);
-  if (ec_) {
+  if (ec_)
+  {
     RCLCPP_INFO_STREAM(this->get_logger(), "error : port_->open() failed...port_name="
                                                << port_name_ << ", e=" << ec_.message().c_str() << "\n");
     return false;
   }
   // option settings...
-  port_->set_option(boost::asio::serial_port_base::baud_rate(baud_rate_));
-  port_->set_option(boost::asio::serial_port_base::character_size(8));
-  port_->set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
-  port_->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
-  port_->set_option(boost::asio::serial_port_base::flow_control(boost::asio::serial_port_base::flow_control::none));
+  port_->set_option(boost::asio::serial_port_base::baud_rate(baud_rate_));  //设置波特率
+  port_->set_option(boost::asio::serial_port_base::character_size(8));      //设置字符大小
+  port_->set_option(
+      boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));  //设置停止位
+  port_->set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));  //设置奇偶校验
+  port_->set_option(
+      boost::asio::serial_port_base::flow_control(boost::asio::serial_port_base::flow_control::none));  //配置流控制
   return true;
 }
 
-void MiniDriver::ParseMessage() {
+//解析串口接受到的数据消息
+void MiniDriver::ParseMessage()
+{
   uint8_t check_num, payload[8], buffer_data[255];
   MessageType msg_type;
   ParseStatus status = HEADER;
   parse_flag_ = true;
-  while (rclcpp::ok() && parse_flag_) {
-    switch (status) {
+
+  //判断节点是否正常运行
+  while (rclcpp::ok() && parse_flag_)
+  {
+    switch (status)
+    {
+      //头帧 如果为头，切换到type
       case HEADER:
         boost::asio::read(*port_.get(), boost::asio::buffer(&buffer_data[0], 1), ec_);
-        if (buffer_data[0] == 0xfc) {
+        if (buffer_data[0] == 0xfc)
+        {
           check_num = 0xfc;
-          status = TYPE; 
+          status = TYPE;
         }
         break;
 
+      //读取一个字节信息，如果值在1-5之间，表示有效，存储到msg_type,和check_num进行异或操作，然后切换到data状态，否则切换到header状态
       case TYPE:
         boost::asio::read(*port_.get(), boost::asio::buffer(&buffer_data[0], 1), ec_);
-        if (buffer_data[0] >= 1 && buffer_data[0] <= 5) {
+        if (buffer_data[0] >= 1 && buffer_data[0] <= 5)
+        {
           msg_type = MessageType(buffer_data[0]);
           check_num ^= buffer_data[0];
           status = DATA;
-        } else {
+        }
+        else
+        {
           status = HEADER;
         }
         break;
 
+      //读取8个字节的数据，保存在payload数组中，并将每个字节和check_num进行异或操作，然后切换到checksum状态
       case DATA:
         boost::asio::read(*port_.get(), boost::asio::buffer(&payload[0], 8), ec_);
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++)
+        {
           check_num ^= payload[i];
         }
         status = CHECKSUM;
         break;
 
+      //读取一个字节的数据，如果值等于check_num，表示校验和匹配，切换到end
       case CHECKSUM:
         boost::asio::read(*port_.get(), boost::asio::buffer(&buffer_data[0], 1), ec_);
-        if (buffer_data[0] == check_num) {
+        if (buffer_data[0] == check_num)
+        {
           status = END;
-        } else {
+        }
+        else
+        {
           status = HEADER;
         }
         break;
 
+      //读取一个字节，如果值等于0xdf，表示消息解析完成
       case END:
         boost::asio::read(*port_.get(), boost::asio::buffer(&buffer_data[0], 1), ec_);
-        if (buffer_data[0] == 0xdf) {
+        if (buffer_data[0] == 0xdf)
+        {
           DistributeMessage(msg_type, payload);
         }
         status = HEADER;
@@ -146,31 +178,49 @@ void MiniDriver::ParseMessage() {
   }
 }
 
-void MiniDriver::DistributeMessage(MessageType type, uint8_t* payload) {
-  if (type == VOLTAGE) {
+void MiniDriver::DistributeMessage(MessageType type, uint8_t* payload)
+{
+  //接受到的为电压消息
+  if (type == VOLTAGE)
+  {
     std_msgs::msg::UInt16 voltage_msg;
     voltage_msg.data = (payload[0] << 8 & 0xff00) | (payload[1] & 0x00ff);
     voltage_publisher_->publish(voltage_msg);
-  } else if (type == WHEEL_ENCODE) {
+  }
+  //接收到编码器消息
+  else if (type == WHEEL_ENCODE)
+  {
     std_msgs::msg::UInt16MultiArray wheel_encode_msg;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 4; i++)
+    {
       wheel_encode_msg.data.push_back((payload[2 * i] << 8 & 0xff00) | (payload[2 * i + 1] & 0x00ff));
     }
     wheel_encode_publisher_->publish(wheel_encode_msg);
     HandleEncodeMessage(wheel_encode_msg.data.at(0), wheel_encode_msg.data.at(1));
-  } else if (type == ANGULAR_VELOCITY) {
+  }
+
+  //接收到角速度消息
+  else if (type == ANGULAR_VELOCITY)
+  {
     imu_msg_.angular_velocity.x = (int16_t)((payload[0] << 8 & 0xff00) | (payload[1] & 0x00ff)) * 0.1;
     imu_msg_.angular_velocity.y = (int16_t)((payload[2] << 8 & 0xff00) | (payload[3] & 0x00ff)) * 0.1;
     imu_msg_.angular_velocity.z = (int16_t)((payload[4] << 8 & 0xff00) | (payload[5] & 0x00ff)) * 0.1;
     imu_msg_flag_[0] = true;
     CheckAndPublishImu();
-  } else if (type == ACCELERATION) {
+  }
+
+  //接收到加速度消息
+  else if (type == ACCELERATION)
+  {
     imu_msg_.linear_acceleration.x = (int16_t)((payload[0] << 8 & 0xff00) | (payload[1] & 0x00ff)) * 0.1;
     imu_msg_.linear_acceleration.y = (int16_t)((payload[2] << 8 & 0xff00) | (payload[3] & 0x00ff)) * 0.1;
     imu_msg_.linear_acceleration.z = (int16_t)((payload[4] << 8 & 0xff00) | (payload[5] & 0x00ff)) * 0.1;
     imu_msg_flag_[1] = true;
     CheckAndPublishImu();
-  } else if (type == ORIENTATION) {
+  }
+  //接受到姿态信息
+  else if (type == ORIENTATION)
+  {
     tf2::Quaternion quaternion;
     quaternion.setRPY((int16_t)((payload[0] << 8 & 0xff00) | (payload[1] & 0x00ff)) * 0.001744444,
                       -(int16_t)((payload[2] << 8 & 0xff00) | (payload[3] & 0x00ff)) * 0.001744444,
@@ -184,8 +234,11 @@ void MiniDriver::DistributeMessage(MessageType type, uint8_t* payload) {
   }
 }
 
-void MiniDriver::CheckAndPublishImu() {
-  if (imu_msg_flag_[0] && imu_msg_flag_[1] && imu_msg_flag_[2]) {
+//检查imu数据并发布
+void MiniDriver::CheckAndPublishImu()
+{
+  if (imu_msg_flag_[0] && imu_msg_flag_[1] && imu_msg_flag_[2])
+  {
     imu_msg_.header.frame_id = "imu_link";
     imu_msg_.header.stamp = this->get_clock()->now();
     imu_publisher_->publish(imu_msg_);
@@ -193,24 +246,32 @@ void MiniDriver::CheckAndPublishImu() {
   }
 }
 
-int MiniDriver::CalculateDelta(int& current_encode, int receive_encode) {
+//计算编码器差值并更新
+int MiniDriver::CalculateDelta(int& current_encode, int receive_encode)
+{
   int delta;
-  if (receive_encode > current_encode) {
-    delta = (receive_encode - current_encode) < (current_encode - receive_encode + 65535)
-                ? (receive_encode - current_encode)
-                : (receive_encode - current_encode - 65535);
-  } else {
-    delta = (current_encode - receive_encode) < (receive_encode - current_encode + 65535)
-                ? (receive_encode - current_encode)
-                : (receive_encode - current_encode + 65535);
+  if (receive_encode > current_encode)
+  {
+    delta = (receive_encode - current_encode) < (current_encode - receive_encode + 65535) ?
+                (receive_encode - current_encode) :
+                (receive_encode - current_encode - 65535);
+  }
+  else
+  {
+    delta = (current_encode - receive_encode) < (receive_encode - current_encode + 65535) ?
+                (receive_encode - current_encode) :
+                (receive_encode - current_encode + 65535);
   }
   current_encode = receive_encode;
   return delta;
 }
 
-void MiniDriver::HandleEncodeMessage(short left_encode, short right_encode) {
+//处理编码器消息，计算并发布里程计信息 ，发布tf变换消息
+void MiniDriver::HandleEncodeMessage(short left_encode, short right_encode)
+{
   now_ = this->get_clock()->now();
-  if (start_flag_) {
+  if (start_flag_)
+  {
     accumulation_x_ = 0.0;
     accumulation_y_ = 0.0;
     accumulation_th_ = 0.0;
@@ -220,30 +281,41 @@ void MiniDriver::HandleEncodeMessage(short left_encode, short right_encode) {
     start_flag_ = false;
     return;
   }
+
+  //计算左轮编码器差值
   int delta_left = CalculateDelta(current_left_encode_, left_encode);
+  //计算右轮编码器差值
   int delta_right = CalculateDelta(current_right_encode_, right_encode);
+  //计算两次接受编码器时间差
   delta_time_ = (now_ - last_time_).seconds();
-  if (delta_time_ > 0.02) {
+  if (delta_time_ > 0.02)
+  {
     double model_param;
     this->get_parameter("model_param_cw", model_param_cw_);
     this->get_parameter("model_param_acw", model_param_acw_);
-    if (delta_right <= delta_left) {
+    if (delta_right <= delta_left)
+    {
       model_param = model_param_cw_;
-    } else {
+    }
+    else
+    {
       model_param = model_param_acw_;
     }
     this->get_parameter("wheel_diameter", wheel_diameter_);
     pulse_per_cycle_ = reduction_ratio_ * encoder_resolution_ / (M_PI * wheel_diameter_ * pid_rate_);
     double delta_theta = (delta_right - delta_left) / (pulse_per_cycle_ * pid_rate_ * model_param);
     double v_theta = delta_theta / delta_time_;
-    
+
     double delta_dis = (delta_right + delta_left) / (pulse_per_cycle_ * pid_rate_ * 2.0);
     double v_dis = delta_dis / delta_time_;
     double delta_x, delta_y;
-    if (delta_theta == 0) {
+    if (delta_theta == 0)
+    {
       delta_x = delta_dis;
       delta_y = 0.0;
-    } else {
+    }
+    else
+    {
       delta_x = delta_dis * (sin(delta_theta) / delta_theta);
       delta_y = delta_dis * ((1 - cos(delta_theta)) / delta_theta);
     }
@@ -279,7 +351,7 @@ void MiniDriver::HandleEncodeMessage(short left_encode, short right_encode) {
     odom_msg.pose.pose.orientation.z = q.getZ();
     odom_msg.pose.pose.orientation.w = q.getW();
     odom_msg.twist.twist.linear.x = v_dis;
-    
+
     odom_msg.twist.twist.linear.y = 0;
     odom_msg.twist.twist.angular.z = v_theta;
     odom_publisher_->publish(odom_msg);
@@ -287,7 +359,9 @@ void MiniDriver::HandleEncodeMessage(short left_encode, short right_encode) {
   last_time_ = now_;
 }
 
-void MiniDriver::TwistHandleCallback(const geometry_msgs::msg::Twist& msg) {
+//处理接收到的twist消息
+void MiniDriver::TwistHandleCallback(const geometry_msgs::msg::Twist& msg)
+{
   twist_mutex_.lock();
   last_twist_time_ = this->get_clock()->now();
   current_twist_ = msg;
@@ -295,34 +369,47 @@ void MiniDriver::TwistHandleCallback(const geometry_msgs::msg::Twist& msg) {
   twist_mutex_.unlock();
 }
 
-void MiniDriver::SpeedCommand(short left,short right){
-  uint8_t data[12] = {0xfc, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf};
+//发送左轮和右轮的数据指令
+void MiniDriver::SpeedCommand(short left, short right)
+{
+  uint8_t data[12] = { 0xfc, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf };
   data[2] = data[6] = (left >> 8) & 0xff;
   data[3] = data[7] = left & 0xff;
   data[4] = data[8] = (right >> 8) & 0xff;
   data[5] = data[9] = right & 0xff;
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < 10; i++)
+  {
     data[10] ^= data[i];
   }
   boost::asio::write(*port_.get(), boost::asio::buffer(data, 12), ec_);
 }
 
-void MiniDriver::SendTimerCallback() {
+//发送速度指令
+void MiniDriver::SendTimerCallback()
+{
   double left_d, right_d, radio;
   double model_param;
   short left, right;
 
   double linear_speed, angular_speed;
-  if ((this->get_clock()->now() - last_twist_time_).seconds() <= 1.0) {
+  //存储角速度，线速度
+  if ((this->get_clock()->now() - last_twist_time_).seconds() <= 1.0)
+  {
     linear_speed = current_twist_.linear.x;
     angular_speed = current_twist_.angular.z;
-  } else {
+  }
+  else
+  {
     linear_speed = 0;
     angular_speed = 0;
   }
-  if (angular_speed <= 0) {
+  //根据速度正负选用参数模型
+  if (angular_speed <= 0)
+  {
     model_param = model_param_cw_;
-  } else {
+  }
+  else
+  {
     model_param = model_param_acw_;
   }
 
@@ -335,30 +422,34 @@ void MiniDriver::SendTimerCallback() {
   left = static_cast<short>(left_d / radio);
   right = static_cast<short>(right_d / radio);
 
-  SpeedCommand(left,right);
-  
+  SpeedCommand(left, right);
 }
 
-void MiniDriver::Pid(){
-  int64_t kp,ki,kd;
-  this->get_parameter("kp",kp);
-  this->get_parameter("ki",ki); 
-  this->get_parameter("kd",kd); 
-  uint8_t data[12] = {0xfc, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf};
+//发送pid数据
+void MiniDriver::Pid()
+{
+  int64_t kp, ki, kd;
+  this->get_parameter("kp", kp);
+  this->get_parameter("ki", ki);
+  this->get_parameter("kd", kd);
+  uint8_t data[12] = { 0xfc, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xdf };
   data[2] = (kp >> 8) & 0xff;
   data[3] = kp & 0xff;
   data[4] = (ki >> 8) & 0xff;
   data[5] = ki & 0xff;
   data[6] = (kd >> 8) & 0xff;
   data[7] = kd & 0xff;
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < 10; i++)
+  {
     data[10] ^= data[i];
   }
 
   boost::asio::write(*port_.get(), boost::asio::buffer(data, 12), ec_);
 }
-void MiniDriver::Run() {
-  if (Init()) {
+void MiniDriver::Run()
+{
+  if (Init())
+  {
     Pid();
     std::thread parse_thread(&MiniDriver::ParseMessage, this);
     parse_thread.detach();
@@ -368,7 +459,8 @@ void MiniDriver::Run() {
 }  // namespace driver
 }  // namespace ros2_stm32
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<ros2_stm32::driver::MiniDriver>());
   rclcpp::shutdown();

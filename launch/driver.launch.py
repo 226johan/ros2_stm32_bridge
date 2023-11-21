@@ -9,6 +9,7 @@ def generate_launch_description():
         launch_ros.actions.Node(
             package="ros2_stm32_bridge",
             executable="base_controller",
-            parameters=[os.path.join(get_package_share_directory("ros2_stm32_bridge"), "params", MYCAR_MODEL + ".yaml")],
+            parameters=[
+                os.path.join(get_package_share_directory("ros2_stm32_bridge"), "params", MYCAR_MODEL + ".yaml"),],
         )
     ])
